@@ -223,7 +223,7 @@ function tick() {
   broadcast({
     t: 's', ph: phase, res, got, need: NEED, k: keys,
     g: { x: Math.round(g.x), y: Math.round(g.y), f: g.f, a: +g.a.toFixed(2), m: g.mode },
-    pl: [...players.values()].map(p => ({ id: p.id, n: p.name, f: p.f, x: Math.round(p.x), y: Math.round(p.y), a: +p.a.toFixed(2), down: p.down, hid: p.hid, esc: p.esc, rev: +p.rev.toFixed(2) }))
+    pl: [...players.values()].map(p => ({ id: p.id, n: p.name, f: p.f, x: Math.round(p.x), y: Math.round(p.y), a: +p.a.toFixed(2), v: !!p.v, down: p.down, hid: p.hid, esc: p.esc, rev: +p.rev.toFixed(2) }))
   });
 }
 
@@ -243,9 +243,11 @@ wss.on('connection', ws => {
       p.a = +m.a || 0;
       if (phase === 'play' && !p.hid && !p.down && !p.esc && m.f === p.f) {
         p.x = Math.max(0, Math.min(W, +m.x || 0)); p.y = Math.max(0, Math.min(H, +m.y || 0));
-        p.noise = m.sp ? 380 : m.mv ? 110 : 0; useStairs(p);
+        p.noise = m.sp ? 380 : m.mv ? 110 : 0; if (m.tk) p.noise = Math.max(p.noise, 220); useStairs(p);
       } else p.noise = 0;
     }
+    else if (m.t === 'vready') p.v = true;
+    else if (m.t === 'sig') { const q = players.get(+m.to); if (q && q !== p && JSON.stringify(m.d || '').length < 20000) send(q.ws, { t: 'sig', from: p.id, d: m.d }); }
     else if (m.t === 'start' && phase !== 'play') startGame();
     else if (m.t === 'h') p.hold = !!m.v;
     else if (m.t === 'e' && phase === 'play' && !p.down && !p.esc) {

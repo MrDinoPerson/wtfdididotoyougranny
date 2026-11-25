@@ -18,7 +18,7 @@ button{cursor:pointer}button:hover{background:#400}
   <b>WASD</b> move · <b>Shift</b> sprint (loud!) · <b>Mouse</b> aim flashlight · <b>E</b> pick up / hide / leave locker · <b>Hold E</b> revive a friend.<br>
   She hears you. Wear headphones.</div>
   <div id="join"><input id="name" maxlength="14" placeholder="Your name"> <button id="jb">Enter the house</button></div>
-  <div id="lobby" style="display:none"><div id="plist"></div><div id="res" style="color:#e55;margin:8px"></div><button id="sb">Start game</button></div>
+  <div id="lobby" style="display:none"><div id="plist"></div><div id="res" style="color:#e55;margin:8px"></div><button id="sb">Start game</button> <button id="vb">Enable voice chat</button><div style="font-size:12px;opacity:.6;margin-top:6px">Proximity voice: you hear people near you on your floor. Use headphones. Granny hears you talk.</div></div>
 </div>
 <script>
 const cv=document.getElementById('c'),cx=cv.getContext('2d'),dk=document.createElement('canvas'),dx=dk.getContext('2d');
@@ -73,13 +73,13 @@ function connect(){
     else if(m.t==='s'){S=m;phase=m.ph;const mp=S.pl.find(p=>p.id===me);
       if(phase==='play'&&prevPhase!=='play'&&mp){P.x=mp.x;P.y=mp.y;P.f=mp.f;P.st=1;say('Find 3 keys. Be quiet.',5)}
       if(mp&&mp.hid){P.x=mp.x;P.y=mp.y}
-      prevPhase=phase;gMode=S.g.m;
+      prevPhase=phase;gMode=S.g.m;voiceSync();
       $('menu').style.display=phase==='play'?'none':'flex';
       $('join').style.display=me?'none':'block';$('lobby').style.display=me?'block':'none';
       $('plist').textContent='In the house: '+S.pl.map(p=>p.n).join(', ');$('res').textContent=S.res;
       $('sb').textContent=phase==='end'?'Play again':'Start game';
       if(!G.x){G.x=S.g.x;G.y=S.g.y}
-    }else if(m.t==='ev')onEvent(m)};
+    }else if(m.t==='ev')onEvent(m);else if(m.t==='sig')onSig(m)};
 }
 function onEvent(m){
   const pn=x=>Math.max(-1,Math.min(1,(x-P.x)/400));
@@ -94,17 +94,62 @@ function onEvent(m){
   else if(m.k==='revive'){sfx.revive();say('Revived!',2)}
   else if(m.k==='escape'&&m.id===me)say('You escaped!',99);
 }
+// ---------- proximity voice chat (WebRTC, signalled through the game server) ----------
+let localStream=null,micOn=false,talking=false;const pcs=new Map();
+const sig=(to,d)=>ws.send(JSON.stringify({t:'sig',to,d}));
+async function enableVoice(){
+  if(localStream)return;
+  try{localStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}catch(e){say('Microphone blocked. Allow it in your browser to use voice chat.',4);return}
+  initAudio();micOn=true;ws.send(JSON.stringify({t:'vready'}));$('vb').style.display='none';
+  const an=AC.createAnalyser();an.fftSize=512;AC.createMediaStreamSource(localStream).connect(an);const buf=new Uint8Array(an.fftSize);
+  setInterval(()=>{an.getByteTimeDomainData(buf);let m=0;for(const v of buf)m=Math.max(m,Math.abs(v-128));talking=micOn&&m>14},100);
+  say('Voice chat on. Granny can hear you talk!',4);
+}
+function toggleMic(){if(!ws||ws.readyState!==1||!me)return;if(!localStream){enableVoice();return}micOn=!micOn;localStream.getAudioTracks()[0].enabled=micOn;if(!micOn)talking=false;say(micOn?'Mic on':'Mic muted',2)}
+function getPc(id){
+  let c=pcs.get(id);if(c)return c;
+  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});c={pc,gain:null,pan:null,q:[]};pcs.set(id,c);
+  localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+  pc.onicecandidate=e=>{if(e.candidate)sig(id,{c:e.candidate})};
+  pc.ontrack=e=>{const st=e.streams[0];const a=new Audio();a.srcObject=st;a.muted=true;a.play().catch(()=>{});
+    c.gain=AC.createGain();c.gain.gain.value=0;c.pan=AC.createStereoPanner();AC.createMediaStreamSource(st).connect(c.gain);c.gain.connect(c.pan);c.pan.connect(master)};
+  pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed'||pc.connectionState==='closed')closePc(id)};
+  return c;
+}
+function closePc(id){const c=pcs.get(id);if(c){try{c.pc.close()}catch(e){}pcs.delete(id)}}
+const flushQ=async c=>{for(const x of c.q.splice(0))await c.pc.addIceCandidate(x)};
+async function call(id){const c=getPc(id);const o=await c.pc.createOffer();await c.pc.setLocalDescription(o);sig(id,{o:c.pc.localDescription})}
+function voiceSync(){
+  if(!localStream)return;const ids=new Set(S.pl.map(p=>p.id));
+  for(const id of[...pcs.keys()])if(!ids.has(id))closePc(id);
+  for(const p of S.pl)if(p.v&&p.id!==me&&!pcs.has(p.id)&&me<p.id)call(p.id).catch(console.warn);
+}
+async function onSig(m){
+  if(!localStream)return;const d=m.d||{};
+  try{
+    if(d.o){const c=getPc(m.from);await c.pc.setRemoteDescription(d.o);await flushQ(c);const a=await c.pc.createAnswer();await c.pc.setLocalDescription(a);sig(m.from,{a:c.pc.localDescription})}
+    else if(d.a){const c=pcs.get(m.from);if(c){await c.pc.setRemoteDescription(d.a);await flushQ(c)}}
+    else if(d.c){const c=getPc(m.from);if(c.pc.remoteDescription)await c.pc.addIceCandidate(d.c);else c.q.push(d.c)}
+  }catch(e){console.warn(e)}
+}
+function voiceTick(){
+  if(!AC||!S)return;
+  for(const[id,c]of pcs){if(!c.gain)continue;const p=S.pl.find(q=>q.id===id),r=rp.get(id);
+    let v=0;if(p&&r&&p.f===P.f&&!p.esc){const d=Math.hypot(r.x-P.x,r.y-P.y);v=Math.pow(Math.max(0,1-d/600),1.5)*1.6}
+    c.gain.gain.setTargetAtTime(v,AC.currentTime,.1);c.pan.pan.value=r?Math.max(-1,Math.min(1,(r.x-P.x)/400)):0}
+}
+$('vb').onclick=()=>{initAudio();enableVoice()};
 $('jb').onclick=()=>{initAudio();connect()};
 $('name').onkeydown=e=>{if(e.key==='Enter')$('jb').click()};
 $('sb').onclick=()=>{initAudio();ws.send(JSON.stringify({t:'start'}))};
 
 // ---------- input ----------
-onkeydown=e=>{if(e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();if(K[k])return;K[k]=1;
+onkeydown=e=>{if(e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();if(K[k])return;K[k]=1;if(k==='m')toggleMic();
   if(k==='e'&&ws&&ws.readyState===1){ws.send(JSON.stringify({t:'e'}));ws.send(JSON.stringify({t:'h',v:1}))}};
 onkeyup=e=>{const k=e.key.toLowerCase();K[k]=0;if(k==='e'&&ws&&ws.readyState===1)ws.send(JSON.stringify({t:'h',v:0}))};
 onmousemove=e=>{mouse.x=e.clientX;mouse.y=e.clientY};
 let moving=false,sprinting=false;
-setInterval(()=>{if(ws&&ws.readyState===1&&me)ws.send(JSON.stringify({t:'pos',x:P.x,y:P.y,f:P.f,a:+P.a.toFixed(2),sp:sprinting,mv:moving}))},50);
+setInterval(()=>{if(ws&&ws.readyState===1&&me)ws.send(JSON.stringify({t:'pos',x:P.x,y:P.y,f:P.f,a:+P.a.toFixed(2),sp:sprinting,mv:moving,tk:talking}))},50);
 
 // ---------- helpers ----------
 function col(o,r){for(const w of map.floors[P.f].walls){const a=Math.max(w.x,Math.min(o.x,w.x+w.w)),b=Math.max(w.y,Math.min(o.y,w.y+w.h)),dx_=o.x-a,dy_=o.y-b,d=Math.hypot(dx_,dy_);
@@ -152,7 +197,7 @@ function frame(now){
   for(const p of S.pl){let r=rp.get(p.id);if(!r){r={x:p.x,y:p.y};rp.set(p.id,r)}r.x+=(p.x-r.x)*.3;r.y+=(p.y-r.y)*.3}
   G.x+=(S.g.x-G.x)*.3;G.y+=(S.g.y-G.y)*.3;G.a=S.g.a;
   gHyp=Math.hypot(G.x-P.x,G.y-P.y);gSame=S.g.f===P.f;gDist=gSame?gHyp:(gHyp<450?gHyp+400:9999);
-  audioTick(dt);
+  audioTick(dt);voiceTick();
   shake=Math.max(0,shake-dt*1.5);lightsOut=Math.max(0,lightsOut-dt);toastT-=dt;if(scare>0)scare-=dt;
   const sh=(shake+(gMode==='chase'&&gDist<250?.35:0))*8,cxo=P.x-VW/2,cyo=P.y-VH/2;
   // --- world ---
@@ -200,6 +245,7 @@ function frame(now){
     else if(S.pl.some(p=>p.down&&p.id!==me&&p.f===P.f&&Math.hypot(rp.get(p.id).x-P.x,rp.get(p.id).y-P.y)<60))prompt='Hold E — revive';
     else if(map.floors[P.f].lockers.some(l=>Math.hypot(l.x-P.x,l.y-P.y)<55))prompt='E — hide';
   }
+  cx.textAlign='left';cx.font='14px Georgia';cx.fillStyle=talking?'#e66':'#998';cx.fillText(!localStream?'M - enable voice chat':micOn?(talking?'MIC: talking - Granny can hear you!':'MIC on (M to mute)'):'MIC muted (M to unmute)',16,VH-20);
   cx.textAlign='center';cx.font='18px Georgia';
   if(prompt){cx.fillStyle='#fff';cx.fillText(prompt,VW/2,VH-60)}
   if(mp.down){cx.fillStyle='#e44';cx.font='22px Georgia';cx.fillText('You were caught. Wait for a friend to revive you...',VW/2,VH/2+120)}
