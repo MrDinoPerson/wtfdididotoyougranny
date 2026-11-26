@@ -40,7 +40,7 @@ let AC,master,noiseB;
 function initAudio(){
   if(AC)return;AC=new(window.AudioContext||webkitAudioContext)();master=AC.createGain();master.gain.value=.8;master.connect(AC.destination);
   const n=AC.sampleRate*2;noiseB=AC.createBuffer(1,n,AC.sampleRate);const d=noiseB.getChannelData(0);for(let i=0;i<n;i++)d[i]=Math.random()*2-1;
-  initMusic();
+  initMusic();loadSqueak();
 }
 // ---------- music: generative score, all synthesized ----------
 // A music-box lullaby in A minor that sometimes hits a wrong note, over slow pads and a low bass.
@@ -101,7 +101,10 @@ function musicStep(t,e){
 const pan=p=>{const n=AC.createStereoPanner();n.pan.value=Math.max(-1,Math.min(1,p));n.connect(master);return n};
 function tone(f1,f2,dur,type,vol,p=0){if(!AC)return;const t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.setValueAtTime(f1,t);o.frequency.exponentialRampToValueAtTime(f2,t+dur);g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);o.connect(g);g.connect(pan(p));o.start();o.stop(t+dur)}
 function nz(dur,f,q,vol,p=0,type='bandpass'){if(!AC)return;const t=AC.currentTime,s=AC.createBufferSource();s.buffer=noiseB;const b=AC.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q;const g=AC.createGain();g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);s.connect(b);b.connect(g);g.connect(pan(p));s.start();s.stop(t+dur)}
-// Rusty hinge: friction noise pushed through two narrow resonances whose pitch glides and wobbles,
+// Door squeak: plays public/squeak.mp3 if it's there (slightly varied pitch each time); otherwise falls back to the synthesized one below.
+let squeakBuf=null;const SQUEAK_VOL=1;
+function loadSqueak(){fetch('squeak.mp3').then(r=>{if(!r.ok)throw new Error('no squeak.mp3');return r.arrayBuffer()}).then(b=>AC.decodeAudioData(b)).then(buf=>{squeakBuf=buf;console.log('squeak.mp3 loaded ('+buf.duration.toFixed(2)+'s)')}).catch(e=>{squeakBuf=null;console.log('squeak.mp3 not used, using synthesized squeak:',e&&e.message)})}
+// Rusty hinge (fallback): friction noise pushed through two narrow resonances whose pitch glides and wobbles,
 // chopped into irregular stick-slip bursts, with a low wooden groan underneath. No pure tones.
 function squeakSound(p,v){
   if(!AC)return;const t=AC.currentTime,dur=.75+Math.random()*.5;
@@ -123,7 +126,7 @@ const sfx={
   bang:(p,v=1)=>{nz(.5,300,.5,.9*v,p,'lowpass');tone(90,25,.5,'sine',.9*v,p)},
   whisper:()=>{const p=Math.random()*2-1;for(let i=0;i<6;i++)setTimeout(()=>nz(.35,2500+Math.random()*1500,8,.18,p),i*220)},
   creak:()=>tone(90,150,1.2,'sawtooth',.07,Math.random()*2-1),
-  squeak:(p,v)=>squeakSound(p,v),
+  squeak:(p,v)=>{if(!squeakBuf){squeakSound(p,v);return}const s=AC.createBufferSource(),g=AC.createGain();s.buffer=squeakBuf;s.playbackRate.value=.92+Math.random()*.16;g.gain.value=v*SQUEAK_VOL;s.connect(g);g.connect(pan(p));s.start()},
   screech:v=>{tone(700,2200,1,'sawtooth',.5*v);tone(710,1900,1,'square',.3*v);nz(1,1500,1,.6*v)},
   key:()=>tone(1200,1800,.3,'sine',.2),
   door:()=>{tone(60,40,1.2,'sawtooth',.4);nz(.8,200,1,.5,0,'lowpass')},

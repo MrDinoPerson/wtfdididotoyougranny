@@ -2,7 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path');
 const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg' };
 
 const server = http.createServer((req, res) => {
   let f = req.url.split('?')[0]; if (f === '/') f = '/index.html';
