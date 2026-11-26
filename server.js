@@ -58,7 +58,20 @@ const stairs = [
   { a: { f: 1, x: 960, y: 70, ax: 960, ay: 140 }, b: { f: 2, x: 960, y: 70, ax: 960, ay: 140 } },
   { a: { f: 1, x: 700, y: 1100, ax: 700, ay: 1030 }, b: { f: 0, x: 700, y: 1100, ax: 700, ay: 1030 } }
 ];
-const EXIT = { x: 1550, y: 1000, r: 55 }, NEED = 3;
+const EXIT = { x: 1550, y: 1000, r: 55 };
+// Locked gates sit in doorways (candidates per floor), breakers power the exit on harder modes.
+const DOORC = [
+  [[390,300,20,100],[390,900,20,100],[790,150,20,100],[790,600,20,100],[790,1000,20,100],[1190,400,20,100],[1190,800,20,100],[150,390,100,20],[250,890,100,20],[500,790,100,20],[900,290,100,20],[950,990,100,20],[1350,690,100,20]],
+  [[510,200,20,100],[510,800,20,100],[1050,450,20,100],[1050,900,20,100],[250,590,100,20],[700,410,100,20],[560,790,100,20],[1250,590,100,20]],
+  [[150,490,110,20],[520,490,120,20],[920,490,120,20],[1320,490,120,20],[200,690,110,20],[780,690,110,20],[1300,690,110,20]]
+];
+const BRK = [{ f: 0, x: 1500, y: 1100 }, { f: 2, x: 1500, y: 600 }];
+const DIFFS = [
+  { name: 'Easy',      need: 3, speed: 130, sight: 320, hear: .7,  evMin: 30, evMax: 60, grace: 25, stam: 5,   doors: 0, doorT: 2,   breakers: 0, breakerT: 4, bd: 0,   batCount: 0, rev: 2, bleed: 0,   findT: 2,  lostT: 1.5, searchT: 5 },
+  { name: 'Normal',    need: 3, speed: 150, sight: 420, hear: 1,   evMin: 18, evMax: 43, grace: 12, stam: 3.5, doors: 2, doorT: 2,   breakers: 0, breakerT: 4, bd: 0,   batCount: 0, rev: 3, bleed: 0,   findT: 1.3, lostT: 2.5, searchT: 7 },
+  { name: 'Hard',      need: 4, speed: 160, sight: 460, hear: 1.15,evMin: 12, evMax: 30, grace: 5,  stam: 3,   doors: 3, doorT: 2.5, breakers: 1, breakerT: 4, bd: 150, batCount: 6, rev: 4, bleed: 100, findT: .9, lostT: 3.5, searchT: 9 },
+  { name: 'Nightmare', need: 5, speed: 175, sight: 520, hear: 1.3, evMin: 8,  evMax: 20, grace: 0,  stam: 2.5, doors: 6, doorT: 3.5, breakers: 2, breakerT: 5, bd: 90,  batCount: 4, rev: 5, bleed: 50,  findT: .5, lostT: 5,   searchT: 12 }
+];
 
 // ---------- helpers ----------
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -104,7 +117,10 @@ function astar(f, sx, sy, ex, ey) {
 // ---------- game state ----------
 const players = new Map(); let nextId = 1;
 let phase = 'lobby', res = '', endT = 0, keys = [], got = 0;
-const g = { x: 1300, y: 1000, f: 1, a: 0, mode: 'patrol', path: [], pi: 0, timer: 0, stun: 0, lost: 0, lf: 1, lx: 0, ly: 0, repath: 0, evT: 20, findT: 0, dest: null, stairE: null, stairO: null };
+let difIdx = 1, D = DIFFS[1], doors = [], breakers = [], bats = [], exitOn = false, squeaks = [];
+const noiseOf = p => Math.max(p.noise || 0, p.loudT > 0 ? p.loudN : 0) * D.hear;
+function checkExit() { if (!exitOn && got >= D.need && breakers.every(b => b.on)) { exitOn = true; ev({ k: 'exit' }); if (g.mode !== 'chase') { g.mode = 'investigate'; g.timer = 6; aim(1, EXIT.x, EXIT.y); } } }
+const g = { x: 1300, y: 1000, f: 1, a: 0, mode: 'patrol', path: [], pi: 0, timer: 0, stun: 0, lost: 0, lf: 1, lx: 0, ly: 0, repath: 0, evT: 20, findT: 0, dest: null, stairE: null, stairO: null, grace: 0 };
 
 const send = (ws, o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
 const broadcast = o => { const s = JSON.stringify(o); for (const p of players.values()) if (p.ws.readyState === 1) p.ws.send(s); };
@@ -119,11 +135,22 @@ function goDest() {
 const aim = (f, x, y) => { g.dest = { f, x, y }; goDest(); };
 
 function startGame() {
-  phase = 'play'; res = ''; got = 0;
-  keys = [0, 1, 2].map(f => { const s = floors[f].keySpots[(Math.random() * floors[f].keySpots.length) | 0]; return { id: f, f, x: s[0], y: s[1] }; });
+  D = DIFFS[difIdx]; phase = 'play'; res = ''; got = 0; exitOn = false;
+  const pool = []; floors.forEach((fl, f) => fl.keySpots.forEach(sp => pool.push({ f, x: sp[0], y: sp[1] })));
+  const take = f => { const c = pool.filter(q => q.f === f); const q = c[(Math.random() * c.length) | 0]; pool.splice(pool.indexOf(q), 1); return q; };
+  const spots = [take(0), take(1), take(2)];
+  while (spots.length < D.need) spots.push(pool.splice((Math.random() * pool.length) | 0, 1)[0]);
+  keys = spots.map((q, id) => ({ id, ...q }));
+  bats = []; for (let i = 0; i < D.batCount && pool.length; i++) bats.push({ id: i, ...pool.splice((Math.random() * pool.length) | 0, 1)[0] });
+  const dc = []; DOORC.forEach((arr, f) => arr.forEach(q => dc.push({ f, x: q[0], y: q[1], w: q[2], h: q[3] })));
+  dc.sort(() => Math.random() - .5);
+  doors = dc.slice(0, D.doors).map((d, i) => ({ id: i, ...d, open: false, p: 0 }));
+  // squeaky doors: other doorways (never a locked gate) that squeal when anyone, Granny included, walks through
+  squeaks = dc.slice(D.doors, D.doors + 8).map((d, i) => ({ id: i, ...d, cd: 0 }));
+  breakers = BRK.slice(0, D.breakers).map((q, i) => ({ id: i, ...q, on: false, p: 0 }));
   let i = 0;
-  for (const p of players.values()) Object.assign(p, { f: 1, x: 90 + (i % 4) * 45, y: 90 + ((i / 4) | 0) * 45, down: false, hid: false, esc: false, rev: 0, hold: false, noise: 0, cd: 0 }), i++;
-  Object.assign(g, { x: 1300, y: 1000, f: 1, mode: 'patrol', path: [], pi: 0, timer: 0, stun: 0, lost: 0, evT: 15, findT: 0, dest: null, stairE: null });
+  for (const p of players.values()) Object.assign(p, { f: 1, x: 90 + (i % 4) * 45, y: 90 + ((i / 4) | 0) * 45, down: false, dead: false, dt: 0, hid: false, esc: false, rev: 0, hold: false, noise: 0, loudT: 0, loudN: 0, cd: 0 }), i++;
+  Object.assign(g, { x: 1300, y: 1000, f: 1, mode: 'patrol', path: [], pi: 0, timer: 0, stun: 0, lost: 0, evT: D.evMin, findT: 0, dest: null, stairE: null, grace: D.grace });
   pickPatrol();
 }
 function pickPatrol() {
@@ -132,7 +159,7 @@ function pickPatrol() {
 }
 
 function caught(p) {
-  p.down = true; p.hid = false; p.rev = 0; ev({ k: 'caught', id: p.id });
+  p.down = true; p.hid = false; p.rev = 0; p.dt = 0; ev({ k: 'caught', id: p.id });
   g.stun = 2.5; g.mode = 'search'; g.timer = 6; g.lf = g.f; g.lx = p.x; g.ly = p.y; g.dest = null; g.path = []; g.stairE = null;
 }
 
@@ -145,11 +172,12 @@ function step(tx, ty, sp, dt) {
 
 function updateGranny(dt) {
   g.timer -= dt; g.repath -= dt;
+  if (g.grace > 0) { g.grace -= dt; return; }
   if (g.stun > 0) { g.stun -= dt; return; }
   const alive = [...players.values()].filter(p => !p.down && !p.esc);
   let seen = null, sd = 1e9;
   for (const p of alive) {
-    if (p.hid || p.f !== g.f) continue; const d = dist(g, p); if (d > 420) continue;
+    if (p.hid || p.f !== g.f) continue; const d = dist(g, p); if (d > D.sight) continue;
     const diff = Math.abs(angDiff(Math.atan2(p.y - g.y, p.x - g.x), g.a));
     if ((diff < 1.1 || d < 110) && los(g.f, g.x, g.y, p.x, p.y) && d < sd) { seen = p; sd = d; }
   }
@@ -157,17 +185,17 @@ function updateGranny(dt) {
     if (g.mode !== 'chase') ev({ k: 'chase' });
     g.mode = 'chase'; g.lost = 0; g.lf = g.f; g.lx = seen.x; g.ly = seen.y;
   } else if (g.mode === 'chase') {
-    g.lost += dt; if (g.lost > 2.5) { g.mode = 'search'; g.timer = 7; aim(g.lf, g.lx, g.ly); }
+    g.lost += dt; if (g.lost > D.lostT) { g.mode = 'search'; g.timer = D.searchT; aim(g.lf, g.lx, g.ly); }
   }
   if (g.mode !== 'chase' && g.repath <= 0) {
-    for (const p of alive) if (!p.hid && p.f === g.f && p.noise > 0 && dist(g, p) < p.noise) { g.mode = 'investigate'; g.timer = 4; aim(g.f, p.x, p.y); g.repath = .6; break; }
+    for (const p of alive) if (!p.hid && p.f === g.f && noiseOf(p) > 0 && dist(g, p) < noiseOf(p)) { g.mode = 'investigate'; g.timer = 4; aim(g.f, p.x, p.y); g.repath = .6; break; }
   }
   if (g.mode === 'search') {
     const h = alive.find(p => p.hid && p.f === g.f && dist(g, p) < 75);
-    if (h) { g.findT += dt; if (g.findT > 1.3) { h.hid = false; g.findT = 0; g.mode = 'chase'; g.lost = 0; g.lf = g.f; g.lx = h.x; g.ly = h.y; ev({ k: 'chase' }); } } else g.findT = 0;
+    if (h) { g.findT += dt; if (g.findT > D.findT) { h.hid = false; g.findT = 0; g.mode = 'chase'; g.lost = 0; g.lf = g.f; g.lx = h.x; g.ly = h.y; ev({ k: 'chase' }); } } else g.findT = 0;
   }
   if (g.mode === 'chase' && g.repath <= 0) { aim(g.lf, g.lx, g.ly); g.repath = .4; }
-  const sp = g.mode === 'chase' ? 150 + got * 8 : (g.mode === 'patrol' ? 80 : 105);
+  const sp = g.mode === 'chase' ? D.speed + got * 8 : (g.mode === 'patrol' ? D.speed * .53 : D.speed * .7);
   if (g.pi < g.path.length) {
     const w = g.path[g.pi]; if (dist(g, w) < 8) g.pi++; else step(w.x, w.y, sp, dt);
   } else if (g.stairE && g.dest && g.dest.f !== g.f) {
@@ -197,16 +225,38 @@ function tick() {
   if (phase === 'play') {
     updateGranny(dt);
     const list = [...players.values()];
+    for (const q of squeaks) {
+      if (q.cd > 0) { q.cd -= dt; continue; }
+      const inside = o => o.f === q.f && o.x > q.x - 14 && o.x < q.x + q.w + 14 && o.y > q.y - 14 && o.y < q.y + q.h + 14;
+      const who = list.find(p => !p.down && !p.hid && !p.esc && inside(p)), gran = inside(g);
+      if (!who && !gran) continue;
+      q.cd = 6; const mx = q.x + q.w / 2, my = q.y + q.h / 2;
+      ev({ k: 'squeak', id: q.id, f: q.f, x: mx, y: my });
+      if (who && g.mode !== 'chase' && g.f === q.f && Math.hypot(g.x - mx, g.y - my) < 900 * D.hear) { g.mode = 'investigate'; g.timer = 4; aim(q.f, mx, my); }
+    }
     for (const p of list) if (p.cd > 0) p.cd -= dt;
-    for (const d of list) if (d.down) {
+    for (const p of list) if (p.loudT > 0) p.loudT -= dt;
+    for (const d of list) if (d.down && !d.dead) {
+      if (D.bleed) { d.dt += dt; if (d.dt >= D.bleed) { d.dead = true; d.rev = 0; ev({ k: 'dead', id: d.id }); continue; } }
       const helpers = list.filter(h => !h.down && !h.hid && !h.esc && h.hold && h.f === d.f && dist(h, d) < 60);
-      d.rev = helpers.length ? d.rev + dt / 3 : Math.max(0, d.rev - dt);
+      d.rev = helpers.length ? d.rev + dt / D.rev : Math.max(0, d.rev - dt);
       if (d.rev >= 1) { d.down = false; d.rev = 0; ev({ k: 'revive', id: d.id }); }
     }
-    if (got >= NEED) for (const p of list) if (p.f === 1 && !p.down && !p.hid && !p.esc && dist(p, EXIT) < EXIT.r) { p.esc = true; ev({ k: 'escape', id: p.id }); }
+    const able = list.filter(p => !p.down && !p.hid && !p.esc && p.hold);
+    for (const d of doors) if (!d.open) {
+      const near = able.filter(p => p.f === d.f && Math.hypot(p.x - (d.x + d.w / 2), p.y - (d.y + d.h / 2)) < 70);
+      if (near.length) { d.p += dt / D.doorT; near.forEach(p => { p.loudT = .3; p.loudN = 260; }); } else d.p = Math.max(0, d.p - dt * .5);
+      if (d.p >= 1) { d.open = true; ev({ k: 'door', f: d.f, x: d.x, y: d.y }); }
+    }
+    for (const b of breakers) if (!b.on) {
+      const near = able.filter(p => p.f === b.f && dist(p, b) < 60);
+      if (near.length) { b.p += dt / D.breakerT; near.forEach(p => { p.loudT = .3; p.loudN = 320; }); } else b.p = Math.max(0, b.p - dt * .5);
+      if (b.p >= 1) { b.on = true; ev({ k: 'breaker', f: b.f, x: b.x, y: b.y, left: breakers.filter(q => !q.on).length }); if (g.mode !== 'chase') { g.mode = 'investigate'; g.timer = 6; aim(b.f, b.x, b.y); } checkExit(); }
+    }
+    if (exitOn) for (const p of list) if (p.f === 1 && !p.down && !p.hid && !p.esc && dist(p, EXIT) < EXIT.r) { p.esc = true; ev({ k: 'escape', id: p.id }); }
     g.evT -= dt;
     if (g.evT <= 0) {
-      g.evT = 18 + Math.random() * 25; const r = Math.random();
+      g.evT = D.evMin + Math.random() * (D.evMax - D.evMin); const r = Math.random();
       if (r < .3) ev({ k: 'whisper' });
       else if (r < .6) {
         const f = (Math.random() * 3) | 0, pl = floors[f].patrol, q = pl[(Math.random() * pl.length) | 0];
@@ -221,9 +271,12 @@ function tick() {
     }
   } else if (phase === 'end') { endT -= dt; if (endT <= 0) phase = 'lobby'; }
   broadcast({
-    t: 's', ph: phase, res, got, need: NEED, k: keys,
+    t: 's', ph: phase, res, got, need: D.need, k: keys, dif: difIdx, bd: D.bd, stam: D.stam, ex: exitOn, bt: bats,
+    dr: doors.filter(d => !d.open).map(d => ({ i: d.id, f: d.f, x: d.x, y: d.y, w: d.w, h: d.h, p: +d.p.toFixed(2) })),
+    br: breakers.map(b => ({ f: b.f, x: b.x, y: b.y, on: b.on, p: +b.p.toFixed(2) })),
+    sq: squeaks.map(q => ({ id: q.id, f: q.f, x: q.x, y: q.y, w: q.w, h: q.h })),
     g: { x: Math.round(g.x), y: Math.round(g.y), f: g.f, a: +g.a.toFixed(2), m: g.mode },
-    pl: [...players.values()].map(p => ({ id: p.id, n: p.name, f: p.f, x: Math.round(p.x), y: Math.round(p.y), a: +p.a.toFixed(2), v: !!p.v, down: p.down, hid: p.hid, esc: p.esc, rev: +p.rev.toFixed(2) }))
+    pl: [...players.values()].map(p => ({ id: p.id, n: p.name, f: p.f, x: Math.round(p.x), y: Math.round(p.y), a: +p.a.toFixed(2), v: !!p.v, bl: p.down && D.bleed && !p.dead ? Math.ceil(D.bleed - p.dt) : 0, dead: !!p.dead, down: p.down, hid: p.hid, esc: p.esc, rev: +p.rev.toFixed(2) }))
   });
 }
 
@@ -234,7 +287,7 @@ wss.on('connection', ws => {
   ws.on('message', raw => {
     let m; try { m = JSON.parse(raw); } catch { return; }
     if (m.t === 'join' && !p && players.size < 8) {
-      p = { id: nextId++, ws, name: String(m.name || 'Player').slice(0, 14), f: 1, x: 100, y: 100, a: 0, down: phase === 'play', hid: false, esc: false, rev: 0, hold: false, noise: 0, cd: 0 };
+      p = { id: nextId++, ws, name: String(m.name || 'Player').slice(0, 14), f: 1, x: 100, y: 100, a: 0, down: phase === 'play', hid: false, esc: false, rev: 0, hold: false, noise: 0, cd: 0, dt: 0, dead: false, loudT: 0, loudN: 0 };
       players.set(p.id, p);
       send(ws, { t: 'hi', id: p.id, map: { W, H, floors: floors.map(f => ({ walls: f.walls, lockers: f.lockers })), exit: EXIT, stairs } });
     }
@@ -246,6 +299,7 @@ wss.on('connection', ws => {
         p.noise = m.sp ? 380 : m.mv ? 110 : 0; if (m.tk) p.noise = Math.max(p.noise, 220); useStairs(p);
       } else p.noise = 0;
     }
+    else if (m.t === 'dif' && phase !== 'play') { difIdx = Math.max(0, Math.min(3, m.v | 0)); D = DIFFS[difIdx]; }
     else if (m.t === 'vready') p.v = true;
     else if (m.t === 'sig') { const q = players.get(+m.to); if (q && q !== p && JSON.stringify(m.d || '').length < 20000) send(q.ws, { t: 'sig', from: p.id, d: m.d }); }
     else if (m.t === 'start' && phase !== 'play') startGame();
@@ -255,9 +309,11 @@ wss.on('connection', ws => {
       const k = keys.find(k => k.f === p.f && dist(k, p) < 55);
       if (k) {
         keys = keys.filter(x => x !== k); got++; ev({ k: 'key', got });
-        if (got >= NEED) { ev({ k: 'exit' }); if (g.mode !== 'chase') { g.mode = 'investigate'; g.timer = 6; aim(1, EXIT.x, EXIT.y); } }
+        checkExit();
         return;
       }
+      const bt = bats.find(b => b.f === p.f && dist(b, p) < 55);
+      if (bt) { bats = bats.filter(x => x !== bt); send(p.ws, { t: 'ev', k: 'battery' }); return; }
       const l = floors[p.f].lockers.find(l => dist(l, p) < 55);
       if (l) { p.hid = true; p.x = l.x; p.y = l.y; p.noise = 0; }
     }

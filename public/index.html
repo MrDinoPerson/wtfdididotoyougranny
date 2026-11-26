@@ -14,31 +14,90 @@ button{cursor:pointer}button:hover{background:#400}
 <canvas id="c"></canvas>
 <div id="menu">
   <h1>GRANNY'S HOUSE</h1>
-  <div id="info">Find <b>3 keys</b> (one hides on each floor: basement, ground, upstairs), then unlock the exit on the ground floor, bottom-right room. Walk onto the stairs to change floors. Granny uses them too.<br>
+  <div id="info">Find <b>3 keys</b> (one hides on each floor: basement, ground, upstairs), then unlock the exit on the ground floor, bottom-right room. Walk onto the stairs to change floors. Granny uses them too. Harder modes add locked gates (hold E), breakers, and flashlight batteries.<br>
   <b>WASD</b> move · <b>Shift</b> sprint (loud!) · <b>Mouse</b> aim flashlight · <b>E</b> pick up / hide / leave locker · <b>Hold E</b> revive a friend.<br>
   She hears you. Wear headphones.</div>
   <div id="join"><input id="name" maxlength="14" placeholder="Your name"> <button id="jb">Enter the house</button></div>
-  <div id="lobby" style="display:none"><div id="plist"></div><div id="res" style="color:#e55;margin:8px"></div><button id="sb">Start game</button> <button id="vb">Enable voice chat</button><div style="font-size:12px;opacity:.6;margin-top:6px">Proximity voice: you hear people near you on your floor. Use headphones. Granny hears you talk.</div></div>
+  <div id="lobby" style="display:none"><div id="dif"></div><div id="ddesc" style="font-size:13px;opacity:.75;max-width:460px;margin:8px auto 12px"></div><div id="plist"></div><div id="res" style="color:#e55;margin:8px"></div><button id="sb">Start game</button> <button id="vb">Enable voice chat</button><div style="font-size:12px;opacity:.6;margin-top:6px">Proximity voice: you hear people near you on your floor. Use headphones. Granny hears you talk.</div></div>
 </div>
 <script>
 const cv=document.getElementById('c'),cx=cv.getContext('2d'),dk=document.createElement('canvas'),dx=dk.getContext('2d');
 let VW,VH;function rs(){VW=cv.width=dk.width=innerWidth;VH=cv.height=dk.height=innerHeight}rs();onresize=rs;
 let ws,me=null,map=null,S=null,phase='menu',prevPhase='';
-const P={x:100,y:100,f:1,a:0,st:1,ex:false},G={x:0,y:0,a:0},rp=new Map(),K={};let mouse={x:0,y:0};
-let gHyp=9999,gSame=true,shake=0,scare=0,lightsOut=0,toast='',toastT=0,gDist=9999,gMode='patrol',time=0;
+const P={x:100,y:100,f:1,a:0,st:1,ex:false,bat:1},G={x:0,y:0,a:0},rp=new Map(),K={};let mouse={x:0,y:0};
+const sqOpen={};let gHyp=9999,gSame=true,shake=0,scare=0,lightsOut=0,toast='',toastT=0,gDist=9999,gMode='patrol',time=0;
 const $=id=>document.getElementById(id);
+const DNAMES=['Easy','Normal','Hard','Nightmare'],DDESC=[
+ '3 keys. Granny sleeps for 25s, is slow, half-deaf and gives up fast. Quick revives.',
+ '3 keys. 2 locked gates to pick. A standard Granny.',
+ '4 keys, 3 locked gates, and a breaker to flip before the exit works. Flashlight batteries drain. You bleed out in 100s if left down. She finds lockers faster.',
+ '5 keys, 6 locked gates, two breakers (basement + upstairs). Weak batteries, 50s bleed-out, slow revives. She hears everything, never gives up, checks lockers fast, and does not wait.'];
+DNAMES.forEach((n,i)=>{const b=document.createElement('button');b.textContent=n;b.style.margin='0 3px';b.onclick=()=>ws.send(JSON.stringify({t:'dif',v:i}));$('dif').appendChild(b)});
 const say=(t,s=4)=>{toast=t;toastT=s};
 
 // ---------- audio (all synthesized) ----------
-let AC,master,chaseG,noiseB;
+let AC,master,noiseB;
 function initAudio(){
   if(AC)return;AC=new(window.AudioContext||webkitAudioContext)();master=AC.createGain();master.gain.value=.8;master.connect(AC.destination);
   const n=AC.sampleRate*2;noiseB=AC.createBuffer(1,n,AC.sampleRate);const d=noiseB.getChannelData(0);for(let i=0;i<n;i++)d[i]=Math.random()*2-1;
-  const lp=AC.createBiquadFilter();lp.type='lowpass';lp.frequency.value=140;const dg=AC.createGain();dg.gain.value=.12;lp.connect(dg);dg.connect(master);
-  [41,43.5,61].forEach(f=>{const o=AC.createOscillator();o.type='sawtooth';o.frequency.value=f;o.connect(lp);o.start()});
-  chaseG=AC.createGain();chaseG.gain.value=0;chaseG.connect(master);
-  [466,659,932].forEach((f,i)=>{const o=AC.createOscillator();o.type='triangle';o.frequency.value=f+i*2.5;o.connect(chaseG);o.start()});
+  initMusic();
 }
+// ---------- music: generative score, all synthesized ----------
+// A music-box lullaby in A minor that sometimes hits a wrong note, over slow pads and a low bass.
+// As Granny gets closer a pulsing low ostinato fades in and the tempo creeps up.
+let mus=null;
+const LAD=[220,261.6,293.7,329.6,349.2,440,493.9,523.3,587.3,659.3];
+const PH1=[3,-1,5,-1,3,-1,1,-1, 2,-1,3,-1,0,-1,-1,-1, 3,-1,5,-1,7,-1,5,-1, 4,-1,2,-1,1,-1,-1,-1];
+const PH2=[5,-1,4,-1,3,-1,2,-1, 1,-1,2,-1,3,-1,-1,-1, 6,-1,5,-1,4,-1,3,-1, 2,-1,0,-1,-1,-1,-1,-1];
+const CHORDS=[{r:110,p:[220,261.6,329.6]},{r:87.3,p:[174.6,220,261.6]},{r:73.4,p:[146.8,174.6,220]},{r:82.4,p:[164.8,207.7,246.9]}];
+const OST=[82.4,82.4,87.3,82.4,98,82.4,87.3,77.8];
+function initMusic(){
+  const bus=AC.createGain();bus.gain.value=.5;bus.connect(master);
+  const len=AC.sampleRate*3,ir=AC.createBuffer(2,len,AC.sampleRate);
+  for(let c=0;c<2;c++){const d=ir.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6)}
+  const conv=AC.createConvolver();conv.buffer=ir;const wet=AC.createGain();wet.gain.value=.7;conv.connect(wet);wet.connect(bus);
+  const dry=AC.createGain();dry.gain.value=.8;dry.connect(bus);
+  const inp=AC.createGain();inp.connect(dry);inp.connect(conv);
+  const padG=AC.createGain(),boxG=AC.createGain(),tenG=AC.createGain();padG.connect(inp);boxG.connect(inp);tenG.gain.value=0;tenG.connect(bus);
+  mus={inp,bus,padG,boxG,tenG,t:AC.currentTime+.4,step:0,int:0,rest:false,swell:AC.currentTime+25};
+  setInterval(musicSched,120);
+}
+function env(g,t,a,v,r){g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(v,t+a);g.gain.exponentialRampToValueAtTime(.0008,t+a+r)}
+function boxNote(t,f,v){const o=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain(),g2=AC.createGain();
+  o.type='sine';o.frequency.value=f;o2.type='triangle';o2.frequency.value=f*2.01;g2.gain.value=.25;o2.connect(g2);g2.connect(g);o.connect(g);
+  env(g,t,.005,v,1.8);g.connect(mus.boxG);o.start(t);o2.start(t);o.stop(t+2);o2.stop(t+2)}
+function padChord(t,freqs,dur,v){for(const f of freqs)for(const det of[-7,7]){const o=AC.createOscillator(),g=AC.createGain(),lp=AC.createBiquadFilter();
+  o.type='sawtooth';o.frequency.value=f;o.detune.value=det;lp.type='lowpass';lp.frequency.value=520;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(v,t+dur*.35);g.gain.linearRampToValueAtTime(0,t+dur*1.15);
+  o.connect(lp);lp.connect(g);g.connect(mus.padG);o.start(t);o.stop(t+dur*1.2)}}
+function bassNote(t,f,dur){const o=AC.createOscillator(),g=AC.createGain();o.type='sine';o.frequency.value=f;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.07,t+dur*.3);g.gain.linearRampToValueAtTime(0,t+dur*1.1);o.connect(g);g.connect(mus.bus);o.start(t);o.stop(t+dur*1.2)}
+function ostNote(t,f,e){const o=AC.createOscillator(),g=AC.createGain(),lp=AC.createBiquadFilter();o.type='sawtooth';o.frequency.value=f;
+  lp.type='lowpass';lp.frequency.setValueAtTime(900,t);lp.frequency.exponentialRampToValueAtTime(180,t+e*1.6);env(g,t,.01,.16,e*1.6);
+  o.connect(lp);lp.connect(g);g.connect(mus.tenG);o.start(t);o.stop(t+e*1.8)}
+function kickAt(t){const o=AC.createOscillator(),g=AC.createGain();o.frequency.setValueAtTime(110,t);o.frequency.exponentialRampToValueAtTime(40,t+.15);
+  env(g,t,.003,.4,.2);o.connect(g);g.connect(mus.tenG);o.start(t);o.stop(t+.3)}
+function swellAt(t){for(const f of[880,932.3]){const o=AC.createOscillator(),g=AC.createGain();o.type='sine';o.frequency.value=f;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.03,t+5);g.gain.linearRampToValueAtTime(0,t+10);o.connect(g);g.connect(mus.inp);o.start(t);o.stop(t+10.5)}}
+function musicSched(){
+  if(!mus||!AC)return;const now=AC.currentTime;
+  const near=Math.max(0,1-gDist/650),target=Math.min(1,near*.8+(gMode==='chase'?.25:0));
+  mus.int+=(target-mus.int)*.08;
+  mus.padG.gain.setTargetAtTime(1-mus.int*.65,now,.5);mus.boxG.gain.setTargetAtTime(1-mus.int*.35,now,.5);
+  mus.tenG.gain.setTargetAtTime(Math.max(0,mus.int-.2)*1.2,now,.4);
+  const e=60/(62+mus.int*34)/2;
+  if(now>mus.swell){swellAt(now+.2);mus.swell=now+25+Math.random()*20}
+  while(mus.t<now+.35){musicStep(mus.t,e);mus.t+=e;mus.step++}
+}
+function musicStep(t,e){
+  const s=mus.step%32,ph=(Math.floor(mus.step/32)%2)?PH2:PH1;
+  if(s===0)mus.rest=Math.random()<.25;
+  if(s%16===0){const c=CHORDS[((mus.step/16)|0)%4];padChord(t,c.p,e*16,.03);bassNote(t,c.r,e*16)}
+  if(!mus.rest){const i=ph[s];if(i>=0&&Math.random()>.12){let f=LAD[i]*(Math.random()<.07?2:1);
+    if(Math.random()<.05+mus.int*.2)f*=1.0595;f*=Math.pow(2,(Math.random()-.5)*30/1200);boxNote(t,f,.11)}}
+  if(mus.int>.25){ostNote(t,OST[s%8],e);if(s%2===0&&mus.int>.4)kickAt(t)}
+}
+
 const pan=p=>{const n=AC.createStereoPanner();n.pan.value=Math.max(-1,Math.min(1,p));n.connect(master);return n};
 function tone(f1,f2,dur,type,vol,p=0){if(!AC)return;const t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.setValueAtTime(f1,t);o.frequency.exponentialRampToValueAtTime(f2,t+dur);g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);o.connect(g);g.connect(pan(p));o.start();o.stop(t+dur)}
 function nz(dur,f,q,vol,p=0,type='bandpass'){if(!AC)return;const t=AC.currentTime,s=AC.createBufferSource();s.buffer=noiseB;const b=AC.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q;const g=AC.createGain();g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);s.connect(b);b.connect(g);g.connect(pan(p));s.start();s.stop(t+dur)}
@@ -47,6 +106,7 @@ const sfx={
   bang:(p,v=1)=>{nz(.5,300,.5,.9*v,p,'lowpass');tone(90,25,.5,'sine',.9*v,p)},
   whisper:()=>{const p=Math.random()*2-1;for(let i=0;i<6;i++)setTimeout(()=>nz(.35,2500+Math.random()*1500,8,.18,p),i*220)},
   creak:()=>tone(90,150,1.2,'sawtooth',.07,Math.random()*2-1),
+  squeak:(p,v)=>{tone(500,900,.28,'sawtooth',.28*v,p);nz(.4,1800,12,.1*v,p);setTimeout(()=>{tone(860,420,.38,'sawtooth',.24*v,p);nz(.4,2200,12,.08*v,p)},150)},
   screech:v=>{tone(700,2200,1,'sawtooth',.5*v);tone(710,1900,1,'square',.3*v);nz(1,1500,1,.6*v)},
   key:()=>tone(1200,1800,.3,'sine',.2),
   door:()=>{tone(60,40,1.2,'sawtooth',.4);nz(.8,200,1,.5,0,'lowpass')},
@@ -55,7 +115,6 @@ const sfx={
 let hbT=0,stT=0;
 function audioTick(dt){
   if(!AC||phase!=='play')return;const chase=gMode==='chase',d=gDist;
-  chaseG.gain.value+=((chase?.1:0)-chaseG.gain.value)*Math.min(1,dt*3);
   if(!gSame&&gHyp<450){stT-=dt;if(stT<=0){stT=.55;nz(.15,90,1,.6*(1-gHyp/450),(G.x-P.x)/300,'lowpass')}}
   const near=Math.max(0,1-d/650);
   if(near>0){hbT-=dt;if(hbT<=0){hbT=60/(55+near*110+(chase?20:0));const v=.2+near*.7;thump(v);setTimeout(()=>thump(v*.7),160)}}
@@ -71,27 +130,32 @@ function connect(){
     if(m.t==='hi'){me=m.id;map=m.map}
     else if(m.t==='floor'){P.f=m.f;P.x=m.x;P.y=m.y;shake=.25}
     else if(m.t==='s'){S=m;phase=m.ph;const mp=S.pl.find(p=>p.id===me);
-      if(phase==='play'&&prevPhase!=='play'&&mp){P.x=mp.x;P.y=mp.y;P.f=mp.f;P.st=1;say('Find 3 keys. Be quiet.',5)}
+      if(phase==='play'&&prevPhase!=='play'&&mp){P.x=mp.x;P.y=mp.y;P.f=mp.f;P.st=1;P.bat=1;say('Find 3 keys. Be quiet.',5)}
       if(mp&&mp.hid){P.x=mp.x;P.y=mp.y}
       prevPhase=phase;gMode=S.g.m;voiceSync();
       $('menu').style.display=phase==='play'?'none':'flex';
       $('join').style.display=me?'none':'block';$('lobby').style.display=me?'block':'none';
-      $('plist').textContent='In the house: '+S.pl.map(p=>p.n).join(', ');$('res').textContent=S.res;
+      $('plist').textContent='In the house: '+S.pl.map(p=>p.n).join(', ');[...$('dif').children].forEach((b,i)=>b.style.borderColor=i===S.dif?'#e44':'#722');$('ddesc').textContent=DDESC[S.dif];$('res').textContent=S.res;
       $('sb').textContent=phase==='end'?'Play again':'Start game';
       if(!G.x){G.x=S.g.x;G.y=S.g.y}
     }else if(m.t==='ev')onEvent(m);else if(m.t==='sig')onSig(m)};
 }
 function onEvent(m){
   const pn=x=>Math.max(-1,Math.min(1,(x-P.x)/400));
-  if(m.k==='chase'){sfx.screech(.25);say('SHE SEES YOU',2);shake=.5}
-  else if(m.k==='caught'){if(m.id===me){scare=1.4;shake=1.5;sfx.screech(1)}else{sfx.screech(.2);say('Someone was caught! Hold E near them to revive.',4)}}
+  if(m.k==='chase'){/* silent on purpose: rely on the heartbeat */}
+  else if(m.k==='caught'){if(m.id===me){scare=1.4;shake=1.5;sfx.screech(1)}else{sfx.screech(.2)}}
   else if(m.k==='bang'){sfx.bang(pn(m.x),m.f===P.f?1:.35);shake=.4;say('Something crashed in the house...',3)}
   else if(m.k==='whisper')sfx.whisper();
   else if(m.k==='creak')sfx.creak();
+  else if(m.k==='squeak'){const d=Math.hypot(m.x-P.x,m.y-P.y);sqOpen[m.id]=2.2;sfx.squeak(pn(m.x),m.f===P.f?Math.max(.2,1-d/1000):.12)}
   else if(m.k==='lights'){lightsOut=2.5+Math.random()*1.5}
   else if(m.k==='key'){sfx.key();say(`Key found (${m.got}/3)`,3)}
   else if(m.k==='exit'){sfx.door();shake=1;say('The exit is unlocked... and the whole house heard it. RUN.',6)}
-  else if(m.k==='revive'){sfx.revive();say('Revived!',2)}
+  else if(m.k==='door'){sfx.bang(pn(m.x),m.f===P.f?.7:.25);say('A gate crashed open...',3)}
+  else if(m.k==='breaker'){sfx.bang(pn(m.x),m.f===P.f?1:.4);shake=.6;say(m.left?`Breaker flipped. ${m.left} to go. She heard that.`:'Power restored. She heard that.',5)}
+  else if(m.k==='dead'){sfx.screech(.4);say(m.id===me?'You bled out...':'A friend bled out.',4)}
+  else if(m.k==='battery'){sfx.key();P.bat=1;say('Fresh batteries!',2)}
+  else if(m.k==='revive'){if(m.id===me){sfx.revive();say('Revived!',2)}}
   else if(m.k==='escape'&&m.id===me)say('You escaped!',99);
 }
 // ---------- proximity voice chat (WebRTC, signalled through the game server) ----------
@@ -152,7 +216,7 @@ let moving=false,sprinting=false;
 setInterval(()=>{if(ws&&ws.readyState===1&&me)ws.send(JSON.stringify({t:'pos',x:P.x,y:P.y,f:P.f,a:+P.a.toFixed(2),sp:sprinting,mv:moving,tk:talking}))},50);
 
 // ---------- helpers ----------
-function col(o,r){for(const w of map.floors[P.f].walls){const a=Math.max(w.x,Math.min(o.x,w.x+w.w)),b=Math.max(w.y,Math.min(o.y,w.y+w.h)),dx_=o.x-a,dy_=o.y-b,d=Math.hypot(dx_,dy_);
+function col(o,r){for(const w of map.floors[P.f].walls.concat(S.dr.filter(d=>d.f===P.f))){const a=Math.max(w.x,Math.min(o.x,w.x+w.w)),b=Math.max(w.y,Math.min(o.y,w.y+w.h)),dx_=o.x-a,dy_=o.y-b,d=Math.hypot(dx_,dy_);
   if(d<r){if(d===0)o.y-=r;else{o.x+=dx_/d*(r-d);o.y+=dy_/d*(r-d)}}}}
 const hit=(x,y)=>map.floors[P.f].walls.some(w=>x>=w.x&&x<=w.x+w.w&&y>=w.y&&y<=w.y+w.h);
 function lightPoly(x,y,a,spread,range,n){const pts=[];if(spread<Math.PI)pts.push([x,y]);
@@ -162,6 +226,16 @@ function cut(pts,x,y,range,k,cxo,cyo){dx.beginPath();pts.forEach((p,i)=>i?dx.lin
 const colorOf=id=>`hsl(${(id*67)%360},55%,55%)`;
 
 // ---------- drawing ----------
+// Granny is only visible while a flashlight beam is actually on her (yours or a teammate's), and not through walls or locked gates.
+function losC(ax,ay,bx,by){const n=Math.ceil(Math.hypot(bx-ax,by-ay)/10);for(let i=1;i<n;i++){const t=i/n,x=ax+(bx-ax)*t,y=ay+(by-ay)*t;
+  if(hit(x,y)||S.dr.some(d=>d.f===P.f&&x>=d.x&&x<=d.x+d.w&&y>=d.y&&y<=d.y+d.h))return false}return true}
+function grannyLit(){
+  if(lightsOut>0)return false;
+  for(const p of S.pl){if(p.hid||p.esc||p.down||p.f!==P.f)continue;const r=p.id===me?P:rp.get(p.id),a=p.id===me?P.a:p.a,bat=p.id===me?P.bat:1;if(!r||bat<=0)continue;
+    const rg=440*(bat>.25?1:.6+bat*1.6),dx_=G.x-r.x,dy_=G.y-r.y,d=Math.hypot(dx_,dy_);if(d>rg)continue;if(d<30)return true;
+    let df=Math.atan2(dy_,dx_)-a;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;
+    if(Math.abs(df)<.42+Math.atan(20/d)&&losC(r.x,r.y,G.x,G.y))return true}
+  return false}
 function drawGranny(x,y,a){cx.save();cx.translate(x,y);cx.rotate(a);
   cx.strokeStyle='#4a2f1a';cx.lineWidth=5;cx.beginPath();cx.moveTo(8,13);cx.lineTo(34,9);cx.stroke();
   cx.fillStyle='#3a2540';cx.beginPath();cx.ellipse(0,0,15,21,0,0,7);cx.fill();
@@ -185,21 +259,22 @@ function frame(now){
   const mp=S.pl.find(p=>p.id===me)||{};
   // --- local movement ---
   P.a=Math.atan2(mouse.y-VH/2,mouse.x-VW/2);
+  if(phase==='play'&&S.bd>0&&!mp.down&&scare<=0)P.bat=Math.max(0,P.bat-dt/S.bd);
   moving=false;sprinting=false;
   if(phase==='play'&&!mp.down&&!mp.hid&&!mp.esc&&scare<=0){
     let mx=(K.d?1:0)-(K.a?1:0),my=(K.s?1:0)-(K.w?1:0);moving=!!(mx||my);
     if(P.st<=0)P.ex=true;if(P.st>.3)P.ex=false;
     sprinting=moving&&K.shift&&!P.ex;
     if(moving){const n=Math.hypot(mx,my),sp=sprinting?200:130;P.x+=mx/n*sp*dt;P.y+=my/n*sp*dt;col(P,13)}
-    P.st=sprinting?Math.max(0,P.st-dt/3.5):Math.min(1,P.st+dt/5);
+    P.st=sprinting?Math.max(0,P.st-dt/S.stam):Math.min(1,P.st+dt/(S.stam*1.4));
   }
   // --- interpolate others ---
   for(const p of S.pl){let r=rp.get(p.id);if(!r){r={x:p.x,y:p.y};rp.set(p.id,r)}r.x+=(p.x-r.x)*.3;r.y+=(p.y-r.y)*.3}
   G.x+=(S.g.x-G.x)*.3;G.y+=(S.g.y-G.y)*.3;G.a=S.g.a;
   gHyp=Math.hypot(G.x-P.x,G.y-P.y);gSame=S.g.f===P.f;gDist=gSame?gHyp:(gHyp<450?gHyp+400:9999);
   audioTick(dt);voiceTick();
-  shake=Math.max(0,shake-dt*1.5);lightsOut=Math.max(0,lightsOut-dt);toastT-=dt;if(scare>0)scare-=dt;
-  const sh=(shake+(gMode==='chase'&&gDist<250?.35:0))*8,cxo=P.x-VW/2,cyo=P.y-VH/2;
+  shake=Math.max(0,shake-dt*1.5);lightsOut=Math.max(0,lightsOut-dt);toastT-=dt;if(scare>0)scare-=dt;for(const k in sqOpen)sqOpen[k]=Math.max(0,sqOpen[k]-dt);
+  const sh=shake*8,cxo=P.x-VW/2,cyo=P.y-VH/2;
   // --- world ---
   cx.save();cx.translate(-cxo+(Math.random()-.5)*sh,-cyo+(Math.random()-.5)*sh);
   cx.fillStyle='#241b16';cx.fillRect(0,0,map.W,map.H);
@@ -207,15 +282,20 @@ function frame(now){
   cx.fillStyle='#5a4636';for(const w of map.floors[P.f].walls)cx.fillRect(w.x,w.y,w.w,w.h);
   cx.fillStyle='#2e2118';for(const w of map.floors[P.f].walls)cx.fillRect(w.x+3,w.y+3,w.w-6,w.h-6);
   for(const l of map.floors[P.f].lockers){cx.fillStyle='#3d2b1c';cx.fillRect(l.x-15,l.y-22,30,44);cx.fillStyle='#1a120b';cx.fillRect(l.x-11,l.y-18,22,36)}
-  const open=S.got>=S.need;if(P.f===1){cx.fillStyle=open?'#2a7a3a':'#6a1a1a';cx.beginPath();cx.arc(map.exit.x,map.exit.y,map.exit.r,0,7);cx.fill();
+  const open=S.ex;if(P.f===1){cx.fillStyle=open?'#2a7a3a':'#6a1a1a';cx.beginPath();cx.arc(map.exit.x,map.exit.y,map.exit.r,0,7);cx.fill();
   cx.fillStyle='#fff8';cx.font='14px Georgia';cx.textAlign='center';cx.fillText(open?'EXIT':'LOCKED',map.exit.x,map.exit.y+5);}
   for(const s of map.stairs)for(const e of[s.a,s.b])if(e.f===P.f){const o=e===s.a?s.b:s.a;cx.fillStyle='#3a3a44';cx.fillRect(e.x-30,e.y-22,60,44);cx.strokeStyle='#777';cx.lineWidth=2;for(let i=0;i<5;i++){cx.beginPath();cx.moveTo(e.x-30+i*12,e.y-22);cx.lineTo(e.x-30+i*12,e.y+22);cx.stroke()}cx.fillStyle='#ccc';cx.font='12px Georgia';cx.textAlign='center';cx.fillText(o.f>P.f?'STAIRS UP':'STAIRS DOWN',e.x,e.y-28)}
+  for(const q of (S.sq||[])){if(q.f!==P.f)continue;const vert=q.h>q.w,hx=vert?q.x+q.w/2:q.x,hy=vert?q.y:q.y+q.h/2,L=(vert?q.h:q.w)*.95,sw=.35+Math.min(1,(sqOpen[q.id]||0)/1.2);
+    cx.save();cx.translate(hx,hy);cx.rotate((vert?Math.PI/2:0)+sw);cx.strokeStyle='#6b4a2e';cx.lineWidth=6;cx.lineCap='round';cx.beginPath();cx.moveTo(0,0);cx.lineTo(L,0);cx.stroke();cx.fillStyle='#caa';cx.beginPath();cx.arc(L*.85,0,2,0,7);cx.fill();cx.restore()}
   for(const k of S.k){if(k.f!==P.f)continue;cx.fillStyle='#fc3';cx.shadowColor='#fc3';cx.shadowBlur=12+Math.sin(time*5)*6;cx.beginPath();cx.arc(k.x,k.y,7,0,7);cx.fill();cx.fillRect(k.x+5,k.y-2,10,4);cx.shadowBlur=0}
+  for(const b of S.bt){if(b.f!==P.f)continue;cx.fillStyle='#3d3';cx.fillRect(b.x-6,b.y-9,12,18);cx.fillStyle='#afa';cx.fillRect(b.x-3,b.y-12,6,3)}
+  for(const b of S.br){if(b.f!==P.f)continue;cx.fillStyle=b.on?'#2a6':'#aa3';cx.fillRect(b.x-18,b.y-24,36,48);cx.fillStyle='#111';cx.fillRect(b.x-12,b.y-18,24,36);cx.fillStyle=b.on?'#5f8':'#f33';cx.fillRect(b.x-4,b.y-10+(b.on?0:12),8,10);if(!b.on&&b.p>0){cx.fillStyle='#fc3';cx.fillRect(b.x-18,b.y+30,36*b.p,5)}}
+  for(const d of S.dr){if(d.f!==P.f)continue;cx.fillStyle='#4a4a4f';cx.fillRect(d.x,d.y,d.w,d.h);cx.strokeStyle='#999';cx.lineWidth=2;const L_=Math.max(d.w,d.h);for(let i=0;i<=L_;i+=14){cx.beginPath();if(d.w>d.h){cx.moveTo(d.x+i,d.y);cx.lineTo(d.x+i,d.y+d.h)}else{cx.moveTo(d.x,d.y+i);cx.lineTo(d.x+d.w,d.y+i)}cx.stroke()}cx.fillStyle='#c33';cx.fillRect(d.x+d.w/2-6,d.y+d.h/2-6,12,12);if(d.p>0){cx.fillStyle='#fc3';cx.fillRect(d.x+d.w/2-20,d.y+d.h/2-18,40*d.p,4)}}
   for(const p of S.pl){if(p.hid||p.esc||p.f!==P.f)continue;const r=p.id===me?P:rp.get(p.id);
     cx.save();cx.translate(r.x,r.y);cx.globalAlpha=p.down?.5:1;cx.fillStyle=colorOf(p.id);cx.beginPath();cx.arc(0,0,13,0,7);cx.fill();
     cx.fillStyle='#fff';cx.fillText(p.n+(p.down?' (down)':''),0,-22);
     if(p.down&&p.rev>0){cx.fillStyle='#3c3';cx.fillRect(-18,18,36*p.rev,4)}cx.restore()}
-  if(S.g.f===P.f)drawGranny(G.x,G.y,G.a);
+  if(S.g.f===P.f&&grannyLit())drawGranny(G.x,G.y,G.a);
   // --- darkness with raycast light ---
   dx.globalCompositeOperation='source-over';dx.clearRect(0,0,VW,VH);
   dx.fillStyle=`rgba(0,0,0,${lightsOut>0?1:.975})`;dx.fillRect(0,0,VW,VH);dx.globalCompositeOperation='destination-out';
@@ -223,32 +303,32 @@ function frame(now){
     for(const p of S.pl){if(p.hid||p.esc||p.f!==P.f)continue;const r=p.id===me?P:rp.get(p.id),a=p.id===me?P.a:p.a;
       if(Math.hypot(r.x-P.x,r.y-P.y)>900)continue;const fl=Math.random()<.015?.3:1;
       cut(lightPoly(r.x,r.y,0,Math.PI,95,28),r.x,r.y,95,.55*fl,cxo,cyo);
-      if(!p.down)cut(lightPoly(r.x,r.y,a,.42,440,36),r.x,r.y,440,.95*fl,cxo,cyo)}
+      {const bat=p.id===me?P.bat:1;if(!p.down&&bat>0){const rg=440*(bat>.25?1:.6+bat*1.6),f2=bat<.25&&Math.random()<.12?.2:fl;cut(lightPoly(r.x,r.y,a,.42,rg,36),r.x,r.y,rg,.95*f2,cxo,cyo)}}}
   }
   cx.drawImage(dk,cxo,cyo);
-  // glowing eyes in the dark
-  if(gSame&&gDist<300&&gDist>40){cx.fillStyle=`rgba(255,30,30,${.5+Math.sin(time*6)*.3})`;cx.shadowColor='#f00';cx.shadowBlur=14;
-    for(const s of[-5,5]){cx.beginPath();cx.arc(G.x+Math.cos(G.a)*8-Math.sin(G.a)*s,G.y+Math.sin(G.a)*8+Math.cos(G.a)*s,2.5,0,7);cx.fill()}cx.shadowBlur=0}
   cx.restore();
   // --- screen fx ---
-  const vg=cx.createRadialGradient(VW/2,VH/2,VH*.25,VW/2,VH/2,VH*.85),c=gMode==='chase'?.35+Math.sin(time*10)*.1:Math.max(0,.3-gDist/1500);
-  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,`rgba(${gMode==='chase'?'90,0,0':'0,0,0'},${.75+c})`);cx.fillStyle=vg;cx.fillRect(0,0,VW,VH);
+  const vg=cx.createRadialGradient(VW/2,VH/2,VH*.25,VW/2,VH/2,VH*.85),c=Math.max(0,.3-gDist/1500);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,`rgba(0,0,0,${.75+c})`);cx.fillStyle=vg;cx.fillRect(0,0,VW,VH);
   cx.fillStyle='#fff1';for(let i=0;i<50;i++)cx.fillRect(Math.random()*VW,Math.random()*VH,2,2);
   // --- HUD ---
   cx.textAlign='left';cx.font='16px Georgia';cx.fillStyle='#dcb';
-  cx.fillText(`Keys ${S.got}/${S.need}`+(S.got>=S.need?'  — GET TO THE EXIT!':''),16,28);
-  cx.fillText(['Basement','Ground floor','Upstairs'][P.f],16,68);cx.fillStyle='#0008';cx.fillRect(16,78,120,8);cx.fillStyle=P.ex?'#a33':'#cb7';cx.fillRect(16,78,120*P.st,8);
+  cx.fillText(`Keys ${S.got}/${S.need}`+(S.br.length?`   Breakers ${S.br.filter(b=>b.on).length}/${S.br.length}`:'')+(S.ex?'   GET TO THE EXIT!':''),16,28);cx.textAlign='right';cx.fillStyle='#a66';cx.fillText(DNAMES[S.dif],VW-16,28);cx.textAlign='left';cx.fillStyle='#dcb';
+  cx.fillText(['Basement','Ground floor','Upstairs'][P.f],16,68);cx.fillStyle='#0008';cx.fillRect(16,78,120,8);cx.fillStyle=P.ex?'#a33':'#cb7';cx.fillRect(16,78,120*P.st,8);if(S.bd>0){cx.fillStyle='#0008';cx.fillRect(16,92,120,8);cx.fillStyle=P.bat<.25?'#d33':'#8c5';cx.fillRect(16,92,120*P.bat,8)}
   let prompt='';
   if(mp.hid)prompt='E — leave locker (stay hidden if she is near)';
   else if(!mp.down&&!mp.esc){
     if(S.k.some(k=>k.f===P.f&&Math.hypot(k.x-P.x,k.y-P.y)<55))prompt='E — pick up key';
+    else if(S.bt.some(b=>b.f===P.f&&Math.hypot(b.x-P.x,b.y-P.y)<55))prompt='E — pick up battery';
     else if(S.pl.some(p=>p.down&&p.id!==me&&p.f===P.f&&Math.hypot(rp.get(p.id).x-P.x,rp.get(p.id).y-P.y)<60))prompt='Hold E — revive';
+    else if(S.dr.some(d=>d.f===P.f&&Math.hypot(d.x+d.w/2-P.x,d.y+d.h/2-P.y)<70))prompt='Hold E — pick the lock (loud)';
+    else if(S.br.some(b=>!b.on&&b.f===P.f&&Math.hypot(b.x-P.x,b.y-P.y)<60))prompt='Hold E — flip the breaker (VERY loud)';
     else if(map.floors[P.f].lockers.some(l=>Math.hypot(l.x-P.x,l.y-P.y)<55))prompt='E — hide';
   }
   cx.textAlign='left';cx.font='14px Georgia';cx.fillStyle=talking?'#e66':'#998';cx.fillText(!localStream?'M - enable voice chat':micOn?(talking?'MIC: talking - Granny can hear you!':'MIC on (M to mute)'):'MIC muted (M to unmute)',16,VH-20);
   cx.textAlign='center';cx.font='18px Georgia';
   if(prompt){cx.fillStyle='#fff';cx.fillText(prompt,VW/2,VH-60)}
-  if(mp.down){cx.fillStyle='#e44';cx.font='22px Georgia';cx.fillText('You were caught. Wait for a friend to revive you...',VW/2,VH/2+120)}
+  if(mp.down){cx.fillStyle='#e44';cx.font='22px Georgia';cx.fillText(mp.dead?'You bled out. Cheer them on...':'You were caught. Wait for a friend to revive you...'+(mp.bl?` Bleeding out: ${mp.bl}s`:''),VW/2,VH/2+120)}
   if(toastT>0){cx.fillStyle='#ecc';cx.font='20px Georgia';cx.fillText(toast,VW/2,90)}
   if(scare>0){const t=1.4-scare;face(t);if(t<.08){cx.fillStyle='#fff';cx.fillRect(0,0,VW,VH)}}
 }
