@@ -101,12 +101,29 @@ function musicStep(t,e){
 const pan=p=>{const n=AC.createStereoPanner();n.pan.value=Math.max(-1,Math.min(1,p));n.connect(master);return n};
 function tone(f1,f2,dur,type,vol,p=0){if(!AC)return;const t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.setValueAtTime(f1,t);o.frequency.exponentialRampToValueAtTime(f2,t+dur);g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);o.connect(g);g.connect(pan(p));o.start();o.stop(t+dur)}
 function nz(dur,f,q,vol,p=0,type='bandpass'){if(!AC)return;const t=AC.currentTime,s=AC.createBufferSource();s.buffer=noiseB;const b=AC.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q;const g=AC.createGain();g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);s.connect(b);b.connect(g);g.connect(pan(p));s.start();s.stop(t+dur)}
+// Rusty hinge: friction noise pushed through two narrow resonances whose pitch glides and wobbles,
+// chopped into irregular stick-slip bursts, with a low wooden groan underneath. No pure tones.
+function squeakSound(p,v){
+  if(!AC)return;const t=AC.currentTime,dur=.75+Math.random()*.5;
+  const out=AC.createGain();out.gain.value=v*6;out.connect(pan(p));
+  [[1,1],[1.85,.45]].forEach(([mul,lvl])=>{
+    const s=AC.createBufferSource();s.buffer=noiseB;s.loop=true;
+    const bp=AC.createBiquadFilter();bp.type='bandpass';bp.Q.value=26;const g=AC.createGain();
+    const f0=520+Math.random()*260,f1=f0*(1.45+Math.random()*.6);
+    for(let i=0;i<=26;i++){const k=i/26;bp.frequency.setValueAtTime((f0+(f1-f0)*Math.pow(k,.7)+(Math.random()-.5)*70)*mul,t+k*dur)}
+    g.gain.setValueAtTime(0,t);
+    for(let x=0;x<dur;){const on=.012+Math.random()*.035,off=.008+Math.random()*.03,e=Math.pow(Math.sin(Math.PI*x/dur),.7);
+      g.gain.setValueAtTime(lvl*e*(.45+Math.random()*.55),t+x);g.gain.setValueAtTime(lvl*e*.08,t+x+on);x+=on+off}
+    g.gain.setValueAtTime(0,t+dur);
+    s.connect(bp);bp.connect(g);g.connect(out);s.start(t,Math.random()*1.5);s.stop(t+dur+.05)});
+  nz(dur*.8,170,1.4,.3*v,p,'lowpass');
+}
 const thump=v=>tone(70,30,.18,'sine',v);
 const sfx={
   bang:(p,v=1)=>{nz(.5,300,.5,.9*v,p,'lowpass');tone(90,25,.5,'sine',.9*v,p)},
   whisper:()=>{const p=Math.random()*2-1;for(let i=0;i<6;i++)setTimeout(()=>nz(.35,2500+Math.random()*1500,8,.18,p),i*220)},
   creak:()=>tone(90,150,1.2,'sawtooth',.07,Math.random()*2-1),
-  squeak:(p,v)=>{tone(500,900,.28,'sawtooth',.28*v,p);nz(.4,1800,12,.1*v,p);setTimeout(()=>{tone(860,420,.38,'sawtooth',.24*v,p);nz(.4,2200,12,.08*v,p)},150)},
+  squeak:(p,v)=>squeakSound(p,v),
   screech:v=>{tone(700,2200,1,'sawtooth',.5*v);tone(710,1900,1,'square',.3*v);nz(1,1500,1,.6*v)},
   key:()=>tone(1200,1800,.3,'sine',.2),
   door:()=>{tone(60,40,1.2,'sawtooth',.4);nz(.8,200,1,.5,0,'lowpass')},
@@ -153,7 +170,7 @@ function onEvent(m){
   else if(m.k==='exit'){sfx.door();shake=1;say('The exit is unlocked... and the whole house heard it. RUN.',6)}
   else if(m.k==='door'){sfx.bang(pn(m.x),m.f===P.f?.7:.25);say('A gate crashed open...',3)}
   else if(m.k==='breaker'){sfx.bang(pn(m.x),m.f===P.f?1:.4);shake=.6;say(m.left?`Breaker flipped. ${m.left} to go. She heard that.`:'Power restored. She heard that.',5)}
-  else if(m.k==='dead'){sfx.screech(.4);say(m.id===me?'You bled out...':'A friend bled out.',4)}
+  else if(m.k==='dead'){sfx.screech(.4);if(m.id===me)say('You bled out...',4)}
   else if(m.k==='battery'){sfx.key();P.bat=1;say('Fresh batteries!',2)}
   else if(m.k==='revive'){if(m.id===me){sfx.revive();say('Revived!',2)}}
   else if(m.k==='escape'&&m.id===me)say('You escaped!',99);
